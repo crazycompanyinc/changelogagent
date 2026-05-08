@@ -12,12 +12,21 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from changelogagent.analysis.anomaly import AnomalyDetector
+from changelogagent.analysis.causal import CausalImpactAnalyzer
+from changelogagent.analysis.cross_project import CrossProjectCorrelator
+from changelogagent.analysis.predictive import PredictiveNarrative
+from changelogagent.analysis.sentiment import ProjectSentimentAnalyzer
 from changelogagent.core.db import EventStore
+from changelogagent.export.formats import ChronicleExporter
 from changelogagent.impact.analyzer import ImpactAnalyzer
 from changelogagent.ingest.ingestor import EventIngestor
 from changelogagent.narrator.engine import NarrativeEngine
+from changelogagent.reports.stakeholders import StakeholderReportGenerator
+from changelogagent.search.engine import ChronicleSearch
 from changelogagent.summarizer.summarizer import Summarizer
 from changelogagent.timeline.builder import TimelineBuilder
+from changelogagent.visualization.timeline import TimelineVisualizer
 
 console = Console()
 
@@ -151,7 +160,90 @@ def summary(ctx: click.Context, since: str | None) -> None:
 def impact(ctx: click.Context) -> None:
     """Show detected impact chains."""
 
-    print_impact_chains(ImpactAnalyzer().analyze(ctx.obj["store"].list_events()))
+    events = ctx.obj["store"].list_events()
+    print_impact_chains(ImpactAnalyzer().analyze(events) + CausalImpactAnalyzer().analyze(events))
+
+
+@cli.command()
+@click.argument("query")
+@click.option("--target", default=None)
+@click.pass_context
+def search(ctx: click.Context, query: str, target: str | None) -> None:
+    """Search across the chronicle."""
+
+    for result in ChronicleSearch(ctx.obj["store"]).search(query, target=target):
+        event = result.event
+        console.print(f"[cyan]{event.timestamp:%Y-%m-%d %H:%M}[/cyan] {event.event_type.value} {event.target}: {result.snippet}")
+
+
+@cli.command("v2-report")
+@click.option("--audience", default="executive", type=click.Choice(["executive", "engineering", "standup"]))
+@click.pass_context
+def v2_report(ctx: click.Context, audience: str) -> None:
+    """Generate a stakeholder-specific v2 report."""
+
+    state = build_state(ctx.obj["store"])
+    sentiment = ProjectSentimentAnalyzer().analyze(state["events"])
+    report = StakeholderReportGenerator().generate(
+        audience,
+        state["entry"],
+        state["narratives"],
+        state["events"],
+        state["impacts"] + CausalImpactAnalyzer().analyze(state["events"]),
+        sentiment,
+    )
+    console.print(report)
+
+
+@cli.command("v2-insights")
+@click.pass_context
+def v2_insights(ctx: click.Context) -> None:
+    """Show causal chains, predictions, anomalies, mood, and cross-project impacts."""
+
+    events = ctx.obj["store"].list_events()
+    console.rule("[bold]Causal Chains")
+    print_impact_chains(CausalImpactAnalyzer().analyze(events))
+    console.rule("[bold]Predictions")
+    for prediction in PredictiveNarrative().predict(events):
+        console.print(f"[cyan]{prediction.confidence:.2f}[/cyan] {prediction.text}")
+    console.rule("[bold]Anomalies")
+    for anomaly in AnomalyDetector().detect(events):
+        console.print(f"[yellow]{anomaly.severity}[/yellow] {anomaly.message}")
+    console.rule("[bold]Project Mood")
+    console.print(ProjectSentimentAnalyzer().analyze(events).summary)
+    console.rule("[bold]Cross-Project")
+    impacts = CrossProjectCorrelator().correlate(events)
+    if impacts:
+        for item in impacts:
+            console.print(f"[cyan]{item.confidence:.2f}[/cyan] {item.summary}")
+    else:
+        console.print("[yellow]No cross-project impacts detected.[/yellow]")
+
+
+@cli.command("timeline-ascii")
+@click.pass_context
+def timeline_ascii(ctx: click.Context) -> None:
+    """Render an ASCII timeline visualization."""
+
+    console.print(TimelineVisualizer().ascii(ctx.obj["store"].list_events()))
+
+
+@cli.command("export")
+@click.option("--format", "fmt", default="markdown", type=click.Choice(["markdown", "html", "json", "pdf", "confluence", "notion"]))
+@click.pass_context
+def export_cmd(ctx: click.Context, fmt: str) -> None:
+    """Export the chronicle in integration-ready formats."""
+
+    state = build_state(ctx.obj["store"])
+    exported = ChronicleExporter().export(state["entry"], state["narratives"], fmt=fmt)
+    if isinstance(exported, bytes):
+        console.print(exported.decode("latin-1"))
+    elif isinstance(exported, dict):
+        import json
+
+        console.print(json.dumps(exported, indent=2))
+    else:
+        console.print(exported)
 
 
 @cli.command()
@@ -181,6 +273,24 @@ def demo(ctx: click.Context) -> None:
     print_timeline(state["events"])
     console.rule("[bold]Impact Chains")
     print_impact_chains(state["impacts"])
+    console.rule("[bold]v2 Insights")
+    console.print(ProjectSentimentAnalyzer().analyze(state["events"]).summary)
+    for prediction in PredictiveNarrative().predict(state["events"]):
+        console.print(prediction.text)
+    for anomaly in AnomalyDetector().detect(state["events"]):
+        console.print(anomaly.message)
+    console.print(TimelineVisualizer().ascii(state["events"], width=60))
+    console.rule("[bold]Executive Report")
+    console.print(
+        StakeholderReportGenerator().generate(
+            "executive",
+            state["entry"],
+            state["narratives"],
+            state["events"],
+            state["impacts"],
+            ProjectSentimentAnalyzer().analyze(state["events"]),
+        )
+    )
     console.rule("[bold]Weekly Chronicle")
     console.print(Summarizer().export(state["entry"], state["narratives"], fmt="markdown"))
 
@@ -198,14 +308,17 @@ def demo_events() -> list[dict[str, Any]]:
         {"event_type": "metric", "source": "Monitoring", "target": "/checkout/", "title": "Conversion rate dropped 12%", "timestamp": at(1), "metadata": {"metric": "conversion_rate", "delta_percent": -12}},
         {"event_type": "agent_action", "source": "Felix-Jim", "target": "/checkout/", "title": 'Opened hotfix PR #143 "Move CTA above the fold"', "timestamp": at(1, 1), "metadata": {"pr_number": 143}},
         {"event_type": "incident", "source": "Support", "target": "/checkout/", "title": "Checkout page CTA not visible on mobile", "timestamp": at(1, 2), "metadata": {"severity": "high", "root_cause": "CTA below fold"}},
+        {"event_type": "message", "source": "Slack", "target": "/checkout/", "title": "Support reports urgent checkout confusion from mobile users", "timestamp": at(1, 3), "metadata": {"provider": "slack", "channel": "support"}},
         {"event_type": "pr_merge", "source": "Felix-Jim", "target": "/checkout/", "title": 'PR #143 merged and deployed within 2 hours', "timestamp": at(1, 4), "metadata": {"pr_number": 143}},
         {"event_type": "metric", "source": "Monitoring", "target": "/checkout/", "title": "Conversion rate up 18% from pre-redesign baseline", "timestamp": at(2), "metadata": {"metric": "conversion_rate", "delta_percent": 18}},
         {"event_type": "agent_action", "source": "Felix-SEO", "target": "/checkout/", "title": 'Submitted PR #144 "Update checkout meta tags"', "timestamp": at(2, 2), "metadata": {"pr_number": 144}},
         {"event_type": "ci_run", "source": "CI", "target": "/checkout/", "title": "Green on all checks", "timestamp": at(2, 3), "metadata": {"status": "passed"}},
         {"event_type": "pr_merge", "source": "Agent-Alpha", "target": "/checkout/", "title": 'PR #145 "Add Google Pay option to checkout"', "timestamp": at(3), "metadata": {"pr_number": 145}},
         {"event_type": "deploy", "source": "DeployBot", "target": "/checkout/", "title": "v2.3.2 deployed", "timestamp": at(3, 2), "metadata": {"version": "v2.3.2", "environment": "production"}},
+        {"event_type": "metric", "source": "Monitoring", "target": "orders-api", "title": "Shared payment dependency latency up 22%", "timestamp": at(3, 3), "metadata": {"metric": "latency", "delta_percent": -22, "project": "orders", "dependencies": ["payment"]}},
         {"event_type": "metric", "source": "Monitoring", "target": "/checkout/", "title": "Average checkout time reduced 8%", "timestamp": at(3, 5), "metadata": {"metric": "checkout_time", "delta_percent": 8}},
         {"event_type": "pr_merge", "source": "Felix-CEO", "target": "/checkout/", "title": 'PR #146 "Add order confirmation email template"', "timestamp": at(4), "metadata": {"pr_number": 146}},
+        {"event_type": "jira_ticket", "source": "Jira", "target": "CHECKOUT", "title": "CHECKOUT-88: Follow up mobile checkout QA", "timestamp": at(4, 1), "metadata": {"status": "In Progress", "priority": "High"}},
         {"event_type": "agent_action", "source": "ChangelogAgent", "target": "project", "title": "Weekly summary generated", "timestamp": at(4, 4)},
     ]
 

@@ -44,6 +44,7 @@ class EventStore:
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_events_target ON events(target)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type)")
 
     def add_event(self, event: ProjectEvent) -> ProjectEvent:
         with self.connect() as conn:
@@ -103,6 +104,39 @@ class EventStore:
     def clear(self) -> None:
         with self.connect() as conn:
             conn.execute("DELETE FROM events")
+
+    def search_events(
+        self,
+        query: str,
+        *,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        target: str | None = None,
+        limit: int = 50,
+    ) -> list[ProjectEvent]:
+        """Search title, description, target, source, and metadata text."""
+
+        terms = [term.strip().lower() for term in query.split() if term.strip()]
+        if not terms:
+            return self.list_events(start=start, end=end, target=target)[:limit]
+        candidates = self.list_events(start=start, end=end, target=target)
+        matches: list[ProjectEvent] = []
+        for event in candidates:
+            haystack = " ".join(
+                [
+                    event.title,
+                    event.description,
+                    event.target,
+                    event.source,
+                    event.event_type.value,
+                    json.dumps(event.metadata, sort_keys=True),
+                ]
+            ).lower()
+            if all(term in haystack for term in terms):
+                matches.append(event)
+                if len(matches) >= limit:
+                    break
+        return matches
 
     @staticmethod
     def _row_to_event(row: sqlite3.Row) -> ProjectEvent:

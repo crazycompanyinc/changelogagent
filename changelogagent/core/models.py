@@ -21,6 +21,9 @@ class EventType(str, Enum):
     AGENT_ACTION = "agent_action"
     CI_RUN = "ci_run"
     METRIC = "metric"
+    ISSUE = "issue"
+    MESSAGE = "message"
+    JIRA_TICKET = "jira_ticket"
 
 
 class Tone(str, Enum):

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "changelogagent"
-version = "0.1.0"
-description = "A living project narrative engine for operational events."
+version = "2.0.0"
+description = "A production-grade living project narrative engine for operational events."
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "ChangelogAgent" }]

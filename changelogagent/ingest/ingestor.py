@@ -63,7 +63,10 @@ class EventIngestor:
             EventType.DEPLOY: 0.72,
             EventType.PR_MERGE: 0.68,
             EventType.METRIC: 0.66,
+            EventType.ISSUE: 0.58,
+            EventType.JIRA_TICKET: 0.56,
             EventType.CI_RUN: 0.5,
+            EventType.MESSAGE: 0.48,
             EventType.AGENT_ACTION: 0.45,
             EventType.CONFIG_CHANGE: 0.42,
             EventType.COMMIT: 0.32,
@@ -75,6 +78,8 @@ class EventIngestor:
             base += 0.12
         if "delta_percent" in metadata:
             base += min(abs(float(metadata["delta_percent"])) / 100, 0.2)
+        if metadata.get("severity") in {"sev1", "sev2", "critical", "high"}:
+            base += 0.16
         files = metadata.get("files") or []
         if isinstance(files, list) and len(files) >= 10:
             base += 0.08
